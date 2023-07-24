@@ -2,19 +2,21 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"html/template"
+	"io"
 	"net/http"
 	"os"
 )
 
 type Post struct {
-	Id    int
-	Title string
-	Body  string
+	Id    int    `json:"id"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 func main() {
@@ -30,6 +32,8 @@ func main() {
 	)
 
 	r.HandleFunc("/post/{id}", ViewHandler)
+
+	r.HandleFunc("/post", CreatePostHandler).Methods("POST")
 
 	r.HandleFunc("/", HomeHandler)
 
@@ -52,6 +56,48 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 	if err := t.ExecuteTemplate(w, "layout.html", items); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func CreatePostHandler(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Panic recovered in ViewHandler", r)
+		}
+	}()
+
+	reqBody, _ := io.ReadAll(r.Body)
+	var post Post
+	json.Unmarshal(reqBody, &post)
+
+	if post.Title == "" || post.Body == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "You must provide a title and body",
+		})
+		return
+	}
+
+	db := initDb()
+
+	err := CreatePost(db, post)
+
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": err.Error(),
+		})
+		return
+	}
+
+	postId := LastInsertId(db)
+
+	post.Id = postId
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Post created",
+		"post":    post,
+	})
 }
 
 func ViewHandler(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +172,22 @@ func checkError(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func LastInsertId(db *sql.DB) int {
+	var id int
+
+	err := db.QueryRow("SELECT LAST_INSERT_ID()").Scan(&id)
+
+	checkError(err)
+
+	return id
+}
+
+func CreatePost(db *sql.DB, post Post) error {
+	_, err := db.Exec("INSERT INTO posts (title, body) VALUES (?, ?)", post.Title, post.Body)
+
+	return err
 }
 
 func ListPosts(db *sql.DB) ([]Post, error) {
